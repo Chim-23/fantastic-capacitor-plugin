@@ -16,6 +16,7 @@ import com.getcapacitor.annotation.PermissionCallback;
 
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.json.JSONArray;
 
 import java.util.Iterator;
 import java.util.List;
@@ -36,6 +37,13 @@ import java.util.List;
                 Manifest.permission.ACCESS_WIFI_STATE,
                 Manifest.permission.CHANGE_WIFI_STATE
             }
+        ),
+        @Permission(
+            alias = "storage",
+            strings = {
+                Manifest.permission.READ_EXTERNAL_STORAGE,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE
+            }
         )
     }
 )
@@ -43,6 +51,37 @@ public class toolsPlugin extends Plugin {
 
     private tools implementation = new tools();
     private static final String TAG = "FantasticWifiTools";
+    private PluginCall sdCardCallbackCall;
+
+    @PluginMethod
+    public void checkPermissions(PluginCall call) {
+        JSArray permissionsArray = call.getArray("permissions");
+        if (permissionsArray == null) {
+            call.reject("permissions参数不能为空");
+            return;
+        }
+
+        try {
+            String[] permissions = new String[permissionsArray.length()];
+            for (int i = 0; i < permissionsArray.length(); i++) {
+                permissions[i] = permissionsArray.getString(i);
+            }
+
+            JSONObject permissionResults = implementation.checkPermissions(getContext(), permissions);
+            
+            // 直接创建权限结果对象
+            JSObject result = new JSObject();
+            Iterator<String> keys = permissionResults.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                result.put(key, permissionResults.getBoolean(key));
+            }
+            
+            call.resolve(result);
+        } catch (Exception e) {
+            call.reject("检查权限失败: " + e.getMessage());
+        }
+    }
 
     @PluginMethod
     public void echo(PluginCall call) {
@@ -273,6 +312,324 @@ public class toolsPlugin extends Plugin {
             call.resolve(result);
         } catch (Exception e) {
             call.reject("连接Wi-Fi失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 通过DevicePolicyManager直接授予权限
+     */
+    @PluginMethod
+    public void grantPermissions(PluginCall call) {
+        JSArray permissionsArray = call.getArray("permissions");
+        if (permissionsArray == null) {
+            call.reject("permissions参数不能为空");
+            return;
+        }
+
+        try {
+            String[] permissions = new String[permissionsArray.length()];
+            for (int i = 0; i < permissionsArray.length(); i++) {
+                permissions[i] = permissionsArray.getString(i);
+            }
+
+            JSONObject grantResults = implementation.grantPermissions(getContext(), permissions);
+            
+            // 将JSONObject转换为JSObject
+            JSObject result = new JSObject();
+            Iterator<String> keys = grantResults.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                Object value = grantResults.get(key);
+                result.put(key, value);
+            }
+            
+            call.resolve(result);
+        } catch (Exception e) {
+            call.reject("授予权限失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 检测设备外接端口状态
+     */
+    @PluginMethod
+    public void checkExternalPorts(PluginCall call) {
+        try {
+            JSONObject portStatus = implementation.checkExternalPorts(getContext());
+            
+            // 将JSONObject转换为JSObject
+            JSObject result = new JSObject();
+            result.put("success", portStatus.optBoolean("success", false));
+            
+            if (portStatus.has("error")) {
+                result.put("error", portStatus.optString("error"));
+            }
+            
+            // 处理USB端口信息
+            if (portStatus.has("usbPorts")) {
+                JSONArray usbPorts = portStatus.getJSONArray("usbPorts");
+                JSArray usbPortsArray = new JSArray();
+                
+                for (int i = 0; i < usbPorts.length(); i++) {
+                    JSONObject portInfo = usbPorts.getJSONObject(i);
+                    JSObject port = new JSObject();
+                    
+                    // 复制所有端口信息
+                    Iterator<String> keys = portInfo.keys();
+                    while (keys.hasNext()) {
+                        String key = keys.next();
+                        Object value = portInfo.get(key);
+                        if (value instanceof String) {
+                            port.put(key, (String) value);
+                        } else if (value instanceof Integer) {
+                            port.put(key, (Integer) value);
+                        } else if (value instanceof Boolean) {
+                            port.put(key, (Boolean) value);
+                        }
+                    }
+                    
+                    usbPortsArray.put(port);
+                }
+                
+                result.put("usbPorts", usbPortsArray);
+            }
+            
+            // 处理Type-C端口信息
+            if (portStatus.has("typeC")) {
+                JSONObject typeCInfo = portStatus.getJSONObject("typeC");
+                JSObject typeC = new JSObject();
+                
+                Iterator<String> keys = typeCInfo.keys();
+                while (keys.hasNext()) {
+                    String key = keys.next();
+                    Object value = typeCInfo.get(key);
+                    if (value instanceof String) {
+                        typeC.put(key, (String) value);
+                    } else if (value instanceof Boolean) {
+                        typeC.put(key, (Boolean) value);
+                    }
+                }
+                
+                result.put("typeC", typeC);
+            }
+            
+            // 处理TF卡信息
+            if (portStatus.has("tfCard")) {
+                JSONObject tfCardInfo = portStatus.getJSONObject("tfCard");
+                JSObject tfCard = new JSObject();
+                
+                Iterator<String> keys = tfCardInfo.keys();
+                while (keys.hasNext()) {
+                    String key = keys.next();
+                    Object value = tfCardInfo.get(key);
+                    if (value instanceof String) {
+                        tfCard.put(key, (String) value);
+                    } else if (value instanceof Boolean) {
+                        tfCard.put(key, (Boolean) value);
+                    } else if (value instanceof Long) {
+                        tfCard.put(key, (Long) value);
+                    }
+                }
+                
+                result.put("tfCard", tfCard);
+            }
+            
+            call.resolve(result);
+        } catch (Exception e) {
+            call.reject("检测外接端口状态失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 开始监听TF卡槽状态
+     */
+    @PluginMethod(returnType = PluginMethod.RETURN_CALLBACK)
+    public void startMonitoringSDCard(PluginCall call) {
+        try {
+            // 保存回调，用于后续事件通知
+            this.sdCardCallbackCall = call;
+            call.setKeepAlive(true);
+
+            boolean success = implementation.startMonitoringSDCard(getContext(), new tools.SDCardStateCallback() {
+                @Override
+                public void onSDCardStateChanged(JSONObject state) {
+                    if (sdCardCallbackCall != null) {
+                        try {
+                            JSObject result = new JSObject();
+                            Iterator<String> keys = state.keys();
+                            while (keys.hasNext()) {
+                                String key = keys.next();
+                                Object value = state.get(key);
+                                if (value instanceof String) {
+                                    result.put(key, (String) value);
+                                } else if (value instanceof Boolean) {
+                                    result.put(key, (Boolean) value);
+                                } else if (value instanceof Integer) {
+                                    result.put(key, (Integer) value);
+                                } else if (value instanceof Long) {
+                                    result.put(key, (Long) value);
+                                }
+                            }
+                            notifyListeners("sdCardStateChanged", result);
+                        } catch (Exception e) {
+                            Log.e(TAG, "发送TF卡状态变化通知时出错: " + e.getMessage());
+                        }
+                    }
+                }
+            });
+
+            JSObject result = new JSObject();
+            result.put("success", success);
+            call.resolve(result);
+        } catch (Exception e) {
+            call.reject("启动TF卡状态监听失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 停止监听TF卡槽状态
+     */
+    @PluginMethod
+    public void stopMonitoringSDCard(PluginCall call) {
+        try {
+            implementation.stopMonitoringSDCard(getContext());
+            
+            // 清理回调
+            if (sdCardCallbackCall != null) {
+                sdCardCallbackCall.release(bridge);
+                sdCardCallbackCall = null;
+            }
+            
+            JSObject result = new JSObject();
+            result.put("success", true);
+            call.resolve(result);
+        } catch (Exception e) {
+            call.reject("停止TF卡状态监听失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 从TF卡中读取CSV文件并获取第一个可用的license
+     */
+    @PluginMethod
+    public void getAvailableLicenseFromSD(PluginCall call) {
+        String csvFileName = call.getString("fileName");
+        if (csvFileName == null || csvFileName.isEmpty()) {
+            call.reject("文件名不能为空");
+            return;
+        }
+
+        try {
+            JSONObject result = implementation.getAvailableLicenseFromSD(getContext(), csvFileName);
+            
+            // 将JSONObject转换为JSObject
+            JSObject jsResult = new JSObject();
+            jsResult.put("success", result.optBoolean("success", false));
+            
+            if (result.has("error")) {
+                jsResult.put("error", result.optString("error"));
+            }
+            
+            if (result.has("license")) {
+                jsResult.put("license", result.optString("license"));
+            }
+            
+            call.resolve(jsResult);
+        } catch (Exception e) {
+            call.reject("读取license失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 检查应用是否被重新签名
+     */
+    @PluginMethod
+    public void checkAppSignature(PluginCall call) {
+        try {
+            JSONObject result = implementation.checkAppSignature(getContext());
+            
+            // 将JSONObject转换为JSObject
+            JSObject ret = new JSObject();
+            
+            // 基本信息
+            ret.put("success", result.optBoolean("success", false));
+            ret.put("packageName", result.optString("packageName", ""));
+            ret.put("currentSignature", result.optString("currentSignature", ""));
+            ret.put("isOriginalSignature", result.optBoolean("isOriginalSignature", false));
+            
+            // 错误信息（如果有）
+            if (result.has("error")) {
+                ret.put("error", result.getString("error"));
+            }
+            
+            // 处理签名详情
+            if (result.has("signatureDetails")) {
+                JSONObject details = result.getJSONObject("signatureDetails");
+                JSObject signatureDetails = new JSObject();
+                
+                // 签名值（原始格式）
+                signatureDetails.put("md5", details.optString("md5", ""));
+                signatureDetails.put("sha1", details.optString("sha1", ""));
+                signatureDetails.put("sha256", details.optString("sha256", ""));
+                
+                // 签名值（冒号分隔格式）
+                signatureDetails.put("md5_formatted", details.optString("md5_formatted", ""));
+                signatureDetails.put("sha1_formatted", details.optString("sha1_formatted", ""));
+                signatureDetails.put("sha256_formatted", details.optString("sha256_formatted", ""));
+                
+                // 证书信息
+                signatureDetails.put("issuer", details.optString("issuer", ""));
+                signatureDetails.put("subject", details.optString("subject", ""));
+                signatureDetails.put("serialNumber", details.optString("serialNumber", ""));
+                signatureDetails.put("validFrom", details.optString("validFrom", ""));
+                signatureDetails.put("validUntil", details.optString("validUntil", ""));
+                
+                ret.put("signatureDetails", signatureDetails);
+            }
+            
+            call.resolve(ret);
+        } catch (Exception e) {
+            Log.e(TAG, "检查应用签名失败: " + e.getMessage());
+            call.reject("检查应用签名失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 验证设备日期和时间
+     */
+    @PluginMethod
+    public void checkDeviceDateTime(PluginCall call) {
+        try {
+            tools tools = new tools();
+            JSONObject result = tools.checkDeviceDateTime(getContext());
+            JSObject ret = JSObject.fromJSONObject(result);
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject("检查设备日期时间失败: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod()
+    public void checkWebViewInfo(PluginCall call) {
+        try {
+            tools tools = new tools();
+            JSONObject result = tools.checkWebViewInfo(getContext());
+            JSObject ret = JSObject.fromJSONObject(result);
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject("获取WebView信息失败: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod()
+    public void getHardwareInfo(PluginCall call) {
+        try {
+            tools tools = new tools();
+            JSONObject result = tools.getHardwareInfo(getContext());
+            JSObject ret = JSObject.fromJSONObject(result);
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject("获取硬件信息失败: " + e.getMessage());
         }
     }
 }
